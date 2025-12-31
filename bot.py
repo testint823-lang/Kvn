@@ -10,6 +10,7 @@ from pyrogram.raw.types import (
 import os
 import asyncio
 from dotenv import load_dotenv
+import signal
 
 load_dotenv()
 
@@ -93,7 +94,7 @@ async def check_bot_admin_status():
         )
         
         # If we reach here, bot is admin with proper permissions
-        print(f"✅ Bot has admin access! Test link: {test_link.invite_link[:30]}...")
+        print(f"✅ Bot has admin access!")
         
         # Revoke the test link
         try:
@@ -124,7 +125,7 @@ async def wait_for_admin_access():
     print("⚠️  Make sure bot has 'Invite Users via Link' permission!")
     print("=" * 60)
     
-    max_attempts = 20  # 20 attempts x 3 seconds = 60 seconds
+    max_attempts = 20
     
     for attempt in range(1, max_attempts + 1):
         try:
@@ -140,7 +141,7 @@ async def wait_for_admin_access():
                 await asyncio.sleep(3)
                 continue
             
-            # Check admin status by trying to create invite link
+            # Check admin status
             is_admin = await check_bot_admin_status()
             
             if is_admin:
@@ -158,9 +159,6 @@ async def wait_for_admin_access():
     
     print("\n" + "=" * 60)
     print("❌ TIMEOUT: Bot was not made admin within 1 minute!")
-    print("⚠️  Please make bot admin with these permissions:")
-    print("   • Add Members (Invite Users via Link)")
-    print("   • Then restart the bot!")
     print("=" * 60 + "\n")
     return False
 
@@ -172,7 +170,6 @@ async def generate_invite_link():
     try:
         print("🔗 Generating invite link for logger group...")
         
-        # Create permanent invite link
         invite_link = await bot.create_chat_invite_link(
             LOGGER_GROUP_ID,
             name="Assistant Accounts",
@@ -182,7 +179,6 @@ async def generate_invite_link():
         logger_group_invite_link = invite_link.invite_link
         
         print(f"✅ Invite link generated successfully!")
-        print(f"🔗 Link: {logger_group_invite_link}")
         return True
         
     except Exception as e:
@@ -230,7 +226,7 @@ async def setup_logger_group():
     
     print("\n📥 Setting up logger group...")
     
-    # Wait for bot to be admin (1 minute max)
+    # Wait for bot to be admin
     is_admin = await wait_for_admin_access()
     
     if not is_admin:
@@ -244,7 +240,7 @@ async def setup_logger_group():
         print("❌ Setup cancelled - Failed to generate invite link")
         return
     
-    # Now join all assistant accounts using the invite link
+    # Join all assistant accounts
     print("\n" + "=" * 60)
     print(f"📥 Joining {len(user_clients)} assistant accounts to logger group...")
     print("=" * 60)
@@ -632,10 +628,11 @@ async def main():
     
     print("\n🎉 Bot is ready! Press Ctrl+C to stop.\n" + "=" * 60 + "\n")
     
-    # Keep running
-    await asyncio.Event().wait()
+    # Keep bot running using idle
+    await idle()
 
-async def cleanup():
+async def stop_all():
+    """Stop all clients gracefully"""
     print("\n🛑 Stopping all clients...")
     for acc_num, cl in user_clients.items():
         try:
@@ -643,15 +640,36 @@ async def cleanup():
             print(f"✅ Account #{acc_num} stopped")
         except:
             pass
-    await bot.stop()
+    
+    try:
+        await bot.stop()
+        print("✅ Bot stopped")
+    except:
+        pass
+    
     print("👋 Goodbye!")
+
+# ==================== IDLE FUNCTION ====================
+async def idle():
+    """Keep the bot running until interrupted"""
+    stop_event = asyncio.Event()
+    
+    def signal_handler(signum, frame):
+        stop_event.set()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    await stop_event.wait()
 
 # ==================== ENTRY POINT ====================
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         print("\n⚠️ Stopped by user (Ctrl+C)")
-        asyncio.run(cleanup())
-    except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
+    finally:
+        loop.run_until_complete(stop_all())
+        loop.close()
