@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatPrivileges
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait, BadRequest, UserAlreadyParticipant, PeerIdInvalid
 from pyrogram.raw.functions.account import ReportPeer
 from pyrogram.raw.types import (
