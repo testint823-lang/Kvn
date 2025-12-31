@@ -1,16 +1,19 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait, BadRequest, UserAlreadyParticipant, PeerIdInvalid
+from pyrogram.errors import FloodWait, BadRequest, UserAlreadyParticipant, PeerIdInvalid, PhoneNumberUnoccupied
 from pyrogram.raw.functions.account import ReportPeer
+from pyrogram.raw.functions.messages import Report
 from pyrogram.raw.types import (
     InputReportReasonSpam, InputReportReasonViolence, 
     InputReportReasonPornography, InputReportReasonChildAbuse,
-    InputReportReasonCopyright, InputReportReasonFake, InputReportReasonIllegalDrugs
+    InputReportReasonCopyright, InputReportReasonFake, InputReportReasonIllegalDrugs,
+    InputPeerUser
 )
 import os
 import asyncio
 from dotenv import load_dotenv
 import signal
+import re
 
 load_dotenv()
 
@@ -82,21 +85,34 @@ def owner_only(func):
         return await func(client, update)
     return wrapper
 
+# ==================== PARSE MESSAGE LINK ====================
+def parse_message_link(link):
+    """Parse Telegram message link"""
+    # https://t.me/channel_name/123
+    # https://t.me/c/1234567890/123
+    patterns = [
+        r't\.me/([^/]+)/(\d+)',  # Public: t.me/channel/msgid
+        r't\.me/c/(\d+)/(\d+)'   # Private: t.me/c/chatid/msgid
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, link)
+        if match:
+            return match.groups()
+    return None
+
 # ==================== CHECK IF BOT IS ADMIN ====================
 async def check_bot_admin_status():
     """Check if bot is admin and can create invite links"""
     try:
-        # Try to create an invite link - only admins can do this
         test_link = await bot.create_chat_invite_link(
             LOGGER_GROUP_ID,
             name="Test Link",
             creates_join_request=False
         )
         
-        # If we reach here, bot is admin with proper permissions
         print(f"✅ Bot has admin access!")
         
-        # Revoke the test link
         try:
             await bot.revoke_chat_invite_link(LOGGER_GROUP_ID, test_link.invite_link)
         except:
@@ -131,7 +147,6 @@ async def wait_for_admin_access():
         try:
             print(f"\n🔍 Checking if bot is admin... (Attempt {attempt}/{max_attempts})")
             
-            # Check if bot is in group
             try:
                 chat = await bot.get_chat(LOGGER_GROUP_ID)
                 print(f"✅ Bot is in group: {chat.title}")
@@ -141,7 +156,6 @@ async def wait_for_admin_access():
                 await asyncio.sleep(3)
                 continue
             
-            # Check admin status
             is_admin = await check_bot_admin_status()
             
             if is_admin:
@@ -217,7 +231,6 @@ async def connect_all_accounts():
     print(f"✅ {len(user_clients)}/{TOTAL_ACCOUNTS} accounts connected!")
     print("=" * 60)
     
-    # Setup logger group
     if LOGGER_GROUP_ID and user_clients:
         await setup_logger_group()
 
@@ -226,21 +239,18 @@ async def setup_logger_group():
     
     print("\n📥 Setting up logger group...")
     
-    # Wait for bot to be admin
     is_admin = await wait_for_admin_access()
     
     if not is_admin:
         print("❌ Setup cancelled - Bot is not admin")
         return
     
-    # Generate invite link
     link_generated = await generate_invite_link()
     
     if not link_generated:
         print("❌ Setup cancelled - Failed to generate invite link")
         return
     
-    # Join all assistant accounts
     print("\n" + "=" * 60)
     print(f"📥 Joining {len(user_clients)} assistant accounts to logger group...")
     print("=" * 60)
@@ -264,7 +274,6 @@ async def setup_logger_group():
     print(f"✅ {joined_count}/{len(user_clients)} accounts joined successfully!")
     print("=" * 60)
     
-    # Send startup messages
     print("\n📢 Sending startup messages...")
     
     for acc_num, client in user_clients.items():
@@ -296,7 +305,9 @@ async def start_command(client, message):
         f"**Available Commands:**\n"
         f"• `/stats` - View session statistics\n"
         f"• `/check` - Test all accounts (use in logger group)\n"
-        f"• `/report` - Report chat/channel\n\n"
+        f"• `/report` - Report chat/channel/bot/message\n\n"
+        f"**Quick Report:**\n"
+        f"Reply to any message link, bot username, channel link with `/report`\n\n"
         f"⚡️ All accounts loaded from STRING sessions!"
     )
 
@@ -330,7 +341,6 @@ async def stats_command(client, message):
 @bot.on_message(filters.command("check"))
 @owner_only
 async def check_command(client, message):
-    # Check if logger group is set
     if not LOGGER_GROUP_ID:
         await message.reply_text(
             "❌ Logger group not configured!\n\n"
@@ -338,7 +348,6 @@ async def check_command(client, message):
         )
         return
     
-    # Check if used in logger group
     if message.chat.id != LOGGER_GROUP_ID:
         await message.reply_text(
             "❌ This command only works in logger group!\n\n"
@@ -382,6 +391,47 @@ async def report_command(client, message):
         await message.reply_text("❌ No active sessions!")
         return
     
+    # Check if replying to a message
+    if message.reply_to_message and message.reply_to_message.text:
+        target = message.reply_to_message.text.strip()
+        
+        # Detect type
+        if 't.me/' in target and '/' in target.split('t.me/')[-1]:
+            # Message link
+            parsed = parse_message_link(target)
+            if parsed:
+                report_data[OWNER_ID] = {
+                    "step": "ask_reason",
+                    "type": "message",
+                    "target": target,
+                    "parsed": parsed
+                }
+                await show_reason_keyboard(await message.reply_text("📨 Detected: Message Link"))
+                return
+        
+        # Check if bot username
+        if target.startswith('@') or (not target.startswith('http') and not '/' in target):
+            username = target.replace('@', '').strip()
+            report_data[OWNER_ID] = {
+                "step": "ask_reason",
+                "type": "bot_or_channel",
+                "target": username
+            }
+            await show_reason_keyboard(await message.reply_text(f"🤖 Detected: @{username}"))
+            return
+        
+        # Channel/group link
+        if 't.me/' in target:
+            username = target.split('/')[-1].replace('@', '')
+            report_data[OWNER_ID] = {
+                "step": "ask_reason",
+                "type": "channel",
+                "target": username
+            }
+            await show_reason_keyboard(await message.reply_text(f"📢 Detected: Channel/Group"))
+            return
+    
+    # Normal flow
     report_data[OWNER_ID] = {"step": "ask_type"}
     
     keyboard = InlineKeyboardMarkup([
@@ -476,9 +526,62 @@ async def execute_report(client, message):
     failed = 0
     results = []
     
-    if data["type"] == "public":
-        # Public - direct report
-        chat_link = data["chat_link"]
+    report_type = data.get("type")
+    
+    # Message report
+    if report_type == "message":
+        parsed = data["parsed"]
+        chat_id, msg_id = parsed
+        
+        if chat_id.isdigit():  # Private chat
+            chat_id = int(f"-100{chat_id}")
+        
+        for acc_num, ucl in user_clients.items():
+            try:
+                await ucl.invoke(
+                    Report(
+                        peer=await ucl.resolve_peer(chat_id),
+                        id=[int(msg_id)],
+                        reason=reason_obj,
+                        message="Reported via bot"
+                    )
+                )
+                results.append(f"✅ Account #{acc_num}")
+                success += 1
+            except Exception as e:
+                results.append(f"❌ Account #{acc_num}: {str(e)[:30]}")
+                failed += 1
+            
+            await asyncio.sleep(0.3)
+    
+    # Bot/Channel username report
+    elif report_type == "bot_or_channel":
+        username = data["target"]
+        
+        for acc_num, ucl in user_clients.items():
+            try:
+                target_entity = await ucl.get_users(username)
+                
+                await ucl.invoke(
+                    ReportPeer(
+                        peer=await ucl.resolve_peer(username),
+                        reason=reason_obj,
+                        message="Reported via bot"
+                    )
+                )
+                results.append(f"✅ Account #{acc_num}")
+                success += 1
+            except Exception as e:
+                error = str(e)
+                if "PHONE_NOT" not in error:
+                    results.append(f"❌ Account #{acc_num}: {error[:30]}")
+                    failed += 1
+            
+            await asyncio.sleep(0.3)
+    
+    # Public channel/group
+    elif report_type in ["public", "channel"]:
+        chat_link = data.get("chat_link") or data.get("target")
         
         for acc_num, ucl in user_clients.items():
             try:
@@ -493,13 +596,15 @@ async def execute_report(client, message):
                 results.append(f"✅ Account #{acc_num}")
                 success += 1
             except Exception as e:
-                results.append(f"❌ Account #{acc_num}: {str(e)[:30]}")
-                failed += 1
+                error = str(e)
+                if "PHONE_NOT" not in error:
+                    results.append(f"❌ Account #{acc_num}: {error[:30]}")
+                    failed += 1
             
             await asyncio.sleep(0.3)
     
+    # Private channel/group
     else:
-        # Private - join first
         invite_link = data["invite_link"]
         
         await message.edit_text(f"📥 Joining with {len(user_clients)} accounts...")
@@ -541,8 +646,10 @@ async def execute_report(client, message):
                 results.append(f"✅ Account #{acc_num}")
                 success += 1
             except Exception as e:
-                results.append(f"❌ Account #{acc_num}: {str(e)[:30]}")
-                failed += 1
+                error = str(e)
+                if "PHONE_NOT" not in error:
+                    results.append(f"❌ Account #{acc_num}: {error[:30]}")
+                    failed += 1
             
             await asyncio.sleep(0.3)
     
@@ -618,17 +725,14 @@ async def main():
         print("❌ No STRING sessions found in .env!")
         return
     
-    # Start bot first
     await bot.start()
     bot.me = await bot.get_me()
     print(f"✅ Bot started: @{bot.me.username}\n")
     
-    # Connect all accounts
     await connect_all_accounts()
     
     print("\n🎉 Bot is ready! Press Ctrl+C to stop.\n" + "=" * 60 + "\n")
     
-    # Keep bot running using idle
     await idle()
 
 async def stop_all():
@@ -649,7 +753,6 @@ async def stop_all():
     
     print("👋 Goodbye!")
 
-# ==================== IDLE FUNCTION ====================
 async def idle():
     """Keep the bot running until interrupted"""
     stop_event = asyncio.Event()
@@ -662,7 +765,6 @@ async def idle():
     
     await stop_event.wait()
 
-# ==================== ENTRY POINT ====================
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     
