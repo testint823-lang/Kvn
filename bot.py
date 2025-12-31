@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatPrivileges
 from pyrogram.errors import FloodWait, BadRequest, UserAlreadyParticipant, PeerIdInvalid
 from pyrogram.raw.functions.account import ReportPeer
 from pyrogram.raw.types import (
@@ -81,6 +81,65 @@ def owner_only(func):
         return await func(client, update)
     return wrapper
 
+# ==================== CHECK IF BOT IS ADMIN ====================
+async def check_bot_admin_status(chat_id):
+    """Check if bot is admin in the group"""
+    try:
+        member = await bot.get_chat_member(chat_id, bot.me.id)
+        if member.status in ["administrator", "creator"]:
+            return True
+        return False
+    except Exception as e:
+        print(f"❌ Error checking admin status: {e}")
+        return False
+
+# ==================== WAIT FOR BOT TO BE ADMIN ====================
+async def wait_for_admin_access():
+    """Wait up to 1 minute for bot to be made admin"""
+    global logger_chat_id
+    
+    print("\n" + "=" * 60)
+    print("⏳ Waiting for bot to be made admin in logger group...")
+    print("=" * 60)
+    
+    max_attempts = 20  # 20 attempts x 3 seconds = 60 seconds
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f"🔍 Checking if bot is admin... (Attempt {attempt}/{max_attempts})")
+            
+            # Try to get chat first
+            try:
+                chat = await bot.get_chat(LOGGER_GROUP_LINK)
+                logger_chat_id = chat.id
+                print(f"✅ Bot is in group: {chat.title}")
+            except Exception as e:
+                print(f"❌ Bot is not in group yet: {e}")
+                await asyncio.sleep(3)
+                continue
+            
+            # Check admin status
+            is_admin = await check_bot_admin_status(logger_chat_id)
+            
+            if is_admin:
+                print("\n" + "=" * 60)
+                print("✅ BOT IS NOW ADMIN IN LOGGER GROUP!")
+                print("=" * 60 + "\n")
+                return True
+            else:
+                print(f"⚠️  Bot is not admin yet. Waiting 3 seconds...")
+                await asyncio.sleep(3)
+        
+        except Exception as e:
+            print(f"❌ Error on attempt {attempt}: {e}")
+            await asyncio.sleep(3)
+    
+    print("\n" + "=" * 60)
+    print("❌ TIMEOUT: Bot was not made admin within 1 minute!")
+    print("⚠️  Please make bot admin in logger group and restart!")
+    print("=" * 60 + "\n")
+    return False
+
 # ==================== CONNECT ACCOUNTS ====================
 async def connect_all_accounts():
     global logger_chat_id
@@ -114,37 +173,45 @@ async def connect_all_accounts():
     print(f"✅ {len(user_clients)}/{TOTAL_ACCOUNTS} accounts connected!")
     print("=" * 60)
     
-    # Join logger group and send startup messages
+    # Setup logger group
     if LOGGER_GROUP_LINK and user_clients:
-        await join_logger_and_send_messages()
+        await setup_logger_group()
 
-# ==================== JOIN LOGGER GROUP ====================
-async def join_logger_and_send_messages():
+# ==================== SETUP LOGGER GROUP ====================
+async def setup_logger_group():
     global logger_chat_id
     
-    print("\n📥 Joining logger group...")
+    print("\n📥 Setting up logger group...")
     
-    # First check if bot is in the group
-    try:
-        chat = await bot.get_chat(LOGGER_GROUP_LINK)
-        logger_chat_id = chat.id
-        print(f"✅ Bot already in group: {chat.title}")
-    except:
-        print("❌ Bot is not in logger group!")
-        print("⚠️  Please add bot to logger group and make it admin!")
+    # Wait for bot to be admin (1 minute max)
+    is_admin = await wait_for_admin_access()
+    
+    if not is_admin:
+        print("❌ Setup cancelled - Bot is not admin")
         return
     
-    # Join with all accounts
+    # Now join all assistant accounts
+    print("\n" + "=" * 60)
+    print(f"📥 Joining {len(user_clients)} assistant accounts to logger group...")
+    print("=" * 60)
+    
+    joined_count = 0
     for acc_num, client in user_clients.items():
         try:
             await client.join_chat(LOGGER_GROUP_LINK)
             print(f"✅ Account #{acc_num} joined logger group")
+            joined_count += 1
         except UserAlreadyParticipant:
             print(f"✅ Account #{acc_num} already in group")
+            joined_count += 1
         except Exception as e:
             print(f"❌ Account #{acc_num} failed to join: {e}")
         
         await asyncio.sleep(0.5)
+    
+    print("=" * 60)
+    print(f"✅ {joined_count}/{len(user_clients)} accounts joined successfully!")
+    print("=" * 60)
     
     # Send startup messages
     print("\n📢 Sending startup messages...")
@@ -161,6 +228,8 @@ async def join_logger_and_send_messages():
             print(f"❌ Account #{acc_num} failed to send: {e}")
     
     print("=" * 60)
+    print("✅ Logger group setup complete!")
+    print("=" * 60 + "\n")
 
 # ==================== START COMMAND ====================
 @bot.on_message(filters.command("start") & filters.private)
@@ -175,7 +244,7 @@ async def start_command(client, message):
         f"✅ Active Sessions: {active}\n\n"
         f"**Available Commands:**\n"
         f"• `/stats` - View session statistics\n"
-        f"• `/check` - Test all accounts\n"
+        f"• `/check` - Test all accounts (use in logger group)\n"
         f"• `/report` - Report chat/channel\n\n"
         f"⚡️ All accounts loaded from STRING sessions!"
     )
@@ -210,11 +279,19 @@ async def stats_command(client, message):
 @bot.on_message(filters.command("check"))
 @owner_only
 async def check_command(client, message):
+    # Check if logger group is set
+    if not logger_chat_id:
+        await message.reply_text(
+            "❌ Logger group not configured!\n\n"
+            "Please set LOGGER_GROUP_LINK in .env file."
+        )
+        return
+    
     # Check if used in logger group
-    if logger_chat_id and message.chat.id != logger_chat_id:
+    if message.chat.id != logger_chat_id:
         await message.reply_text(
             "❌ This command only works in logger group!\n\n"
-            "Use this command in the logger group where bot is admin."
+            f"Use this command in the logger group (Chat ID: `{logger_chat_id}`)."
         )
         return
     
@@ -231,7 +308,7 @@ async def check_command(client, message):
         try:
             await cl.send_message(
                 message.chat.id,
-                f"✅ **Account #{acc_num} - Done**"
+                f"✅ **Account #{acc_num} - Working**"
             )
             success += 1
             await asyncio.sleep(0.5)
@@ -488,8 +565,8 @@ async def main():
     
     # Start bot first
     await bot.start()
-    bot_info = await bot.get_me()
-    print(f"✅ Bot started: @{bot_info.username}\n")
+    bot.me = await bot.get_me()
+    print(f"✅ Bot started: @{bot.me.username}\n")
     
     # Connect all accounts
     await connect_all_accounts()
