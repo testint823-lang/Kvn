@@ -13,6 +13,7 @@ import asyncio
 from dotenv import load_dotenv
 import signal
 import re
+import time
 
 load_dotenv()
 
@@ -93,8 +94,8 @@ def owner_only(func):
 def parse_message_link(link):
     """Parse Telegram message link"""
     patterns = [
-        r't.me/([^/]+)/(\d+)',  # Public: t.me/channel/msgid
-        r't.me/c/(-?\d+)/(\d+)'   # Private: t.me/c/chatid/msgid
+        r't\.me/([^/]+)/(\d+)',  # Public: t.me/channel/msgid
+        r't\.me/c/(-?\d+)/(\d+)'   # Private: t.me/c/chatid/msgid
     ]
     
     for pattern in patterns:  
@@ -408,7 +409,12 @@ async def report_command(client, message):
     # Check if replying to a message  
     if message.reply_to_message and message.reply_to_message.text:  
         target = message.reply_to_message.text.strip()  
-          
+        
+        # Clean the target (remove any whitespace, newlines)
+        target = target.strip()
+        
+        print(f"DEBUG: Target received: {target}")
+        
         # Detect type  
         if 't.me/' in target and '/' in target.split('t.me/')[-1]:  
             # Message link  
@@ -420,32 +426,51 @@ async def report_command(client, message):
                     "target": target,  
                     "parsed": parsed  
                 }  
+                print(f"DEBUG: Detected as message link")
                 await show_reason_keyboard(await message.reply_text("📨 Detected: Message Link"))  
                 return  
-          
-        # Check if bot username  
-        if target.startswith('@') or (not target.startswith('http') and not '/' in target):  
-            username = target.replace('@', '').strip()  
+        
+        # Check if channel/group link
+        if 't.me/' in target:
+            # Try to extract username from link
+            if 't.me/joinchat/' in target or 't.me/+' in target:
+                # It's an invite link
+                report_data[OWNER_ID] = {  
+                    "step": "ask_reason",  
+                    "type": "private_chat",  
+                    "target": target  
+                }  
+                print(f"DEBUG: Detected as private chat invite")
+                await show_reason_keyboard(await message.reply_text("🔒 Detected: Private Chat/Channel"))  
+                return
+            else:
+                # Public channel/group
+                # Extract username from t.me/username
+                parts = target.split('t.me/')
+                if len(parts) > 1:
+                    username = parts[-1].split('/')[0].replace('@', '').strip()
+                    report_data[OWNER_ID] = {  
+                        "step": "ask_reason",  
+                        "type": "public_chat",  
+                        "target": username  
+                    }  
+                    print(f"DEBUG: Detected as public chat: @{username}")
+                    await show_reason_keyboard(await message.reply_text(f"📢 Detected: @{username}"))  
+                    return
+        
+        # Check if bot username (starts with @ or just text)
+        if target.startswith('@') or (not target.startswith('http') and not '/' in target and not 't.me' in target):
+            username = target.replace('@', '').strip()
             report_data[OWNER_ID] = {  
                 "step": "ask_reason",  
                 "type": "bot_or_channel",  
                 "target": username  
             }  
+            print(f"DEBUG: Detected as username: @{username}")
             await show_reason_keyboard(await message.reply_text(f"🤖 Detected: @{username}"))  
             return  
-          
-        # Channel/group link  
-        if 't.me/' in target:  
-            username = target.split('/')[-1].replace('@', '')  
-            report_data[OWNER_ID] = {  
-                "step": "ask_reason",  
-                "type": "channel",  
-                "target": username  
-            }  
-            await show_reason_keyboard(await message.reply_text(f"📢 Detected: Channel/Group"))  
-            return  
     
-    # Normal flow  
+    # Normal flow - no reply, ask for type
     report_data[OWNER_ID] = {"step": "ask_type"}  
     
     keyboard = InlineKeyboardMarkup([  
@@ -460,6 +485,50 @@ async def report_command(client, message):
         "Is the target public or private?",  
         reply_markup=keyboard  
     )
+
+# ==================== HANDLE USER INPUT (for links/usernames) ====================
+
+@bot.on_message(filters.private & ~filters.command(["start", "stats", "report", "check"]))
+@owner_only
+async def handle_user_input(client, message):
+    if OWNER_ID not in report_data:
+        return
+    
+    data = report_data[OWNER_ID]
+    
+    if data.get("step") == "ask_link":
+        # User sent a public chat link/username
+        target = message.text.strip()
+        
+        # Clean the target
+        if target.startswith('@'):
+            username = target[1:]
+        elif 't.me/' in target:
+            # Extract username from link
+            parts = target.split('t.me/')
+            username = parts[-1].split('/')[0].replace('@', '')
+        else:
+            username = target
+        
+        report_data[OWNER_ID] = {
+            "step": "ask_reason",
+            "type": "public_chat",
+            "target": username
+        }
+        
+        await show_reason_keyboard(await message.reply_text(f"📢 Target: @{username}"))
+    
+    elif data.get("step") == "ask_invite":
+        # User sent a private chat invite link
+        target = message.text.strip()
+        
+        report_data[OWNER_ID] = {
+            "step": "ask_reason",
+            "type": "private_chat",
+            "target": target
+        }
+        
+        await show_reason_keyboard(await message.reply_text("🔒 Target: Private Chat"))
 
 # ==================== TYPE SELECTION ====================
 
@@ -480,7 +549,8 @@ async def select_type(client, callback):
             "**Examples:**\n"  
             "• `https://t.me/channel_name`\n"  
             "• `@channel_name`\n"  
-            "• `channel_name`"  
+            "• `channel_name`\n\n"  
+            "**Note:** Assistant accounts must be able to see the chat/channel."  
         )  
     else:  
         await callback.message.edit_text(  
@@ -488,7 +558,8 @@ async def select_type(client, callback):
             "Send the invite link:\n\n"  
             "**Examples:**\n"  
             "• `https://t.me/+AbCdEfGhIjKl`\n"  
-            "• `https://t.me/joinchat/AbCdEfGhIjKl`"  
+            "• `https://t.me/joinchat/AbCdEfGhIjKl`\n\n"  
+            "**Note:** Assistant accounts will join via the invite link first."  
         )  
     
     await callback.answer()
@@ -538,6 +609,10 @@ async def select_reason(client, callback):
 # ==================== EXECUTE REPORT ====================
 
 async def execute_report(client, message):
+    if OWNER_ID not in report_data:
+        await message.edit_text("❌ Report session expired! Use /report again.")
+        return
+        
     data = report_data[OWNER_ID]
     reason_key = data["reason"]
     reason_name, reason_obj = REPORT_REASONS[reason_key]
@@ -547,16 +622,137 @@ async def execute_report(client, message):
     results = []  
     
     report_type = data.get("type")  
+    target = data.get("target", "")
     
-    # Message report  
-    if report_type == "message":  
+    print(f"DEBUG: Starting report. Type: {report_type}, Target: {target}, Reason: {reason_key}")
+    
+    # Public chat/channel report (username based)
+    if report_type in ["public_chat", "bot_or_channel", "channel"]:
+        username = target
+        
+        for acc_num, ucl in user_clients.items():  
+            acc_success = 0  
+            acc_failed = 0  
+              
+            for report_num in range(1, MAX_REPORTS + 1):  
+                try:  
+                    print(f"DEBUG: Account #{acc_num} attempting to report @{username} (report #{report_num})")
+                    
+                    # First try to get chat info
+                    try:
+                        chat = await ucl.get_chat(username)
+                        print(f"DEBUG: Account #{acc_num} can see chat: {chat.title}")
+                    except Exception as e:
+                        print(f"DEBUG: Account #{acc_num} cannot access chat @{username}: {e}")
+                    
+                    # Report the peer
+                    await ucl.invoke(  
+                        ReportPeer(  
+                            peer=await ucl.resolve_peer(username),  
+                            reason=reason_obj,  
+                            message=f"Report {report_num} from Account #{acc_num}"  
+                        )  
+                    )  
+                    
+                    acc_success += 1  
+                    success += 1
+                    print(f"DEBUG: Account #{acc_num} report #{report_num} successful")
+                      
+                except Exception as e:  
+                    error = str(e)  
+                    print(f"DEBUG: Account #{acc_num} report #{report_num} failed: {error}")
+                    
+                    if "FLOOD_WAIT" in error:
+                        # Extract wait time
+                        wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
+                        if wait_match:
+                            wait_time = int(wait_match.group(1))
+                            print(f"DEBUG: Flood wait for {wait_time} seconds")
+                            await asyncio.sleep(wait_time)
+                    
+                    # Don't count USER_BOT and PHONE_NOT errors as failures
+                    if "USER_BOT" not in error and "PHONE_NOT" not in error:  
+                        acc_failed += 1  
+                        failed += 1  
+                  
+                await asyncio.sleep(2)  # Increased delay between reports
+              
+            if acc_success > 0:  
+                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
+            if acc_failed > 0:  
+                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")
+    
+    # Private chat report (invite link based)
+    elif report_type == "private_chat":
+        invite_link = target
+        
+        for acc_num, ucl in user_clients.items():  
+            acc_success = 0  
+            acc_failed = 0  
+              
+            for report_num in range(1, MAX_REPORTS + 1):  
+                try:  
+                    print(f"DEBUG: Account #{acc_num} attempting to report private chat (report #{report_num})")
+                    
+                    # First join the chat
+                    try:
+                        chat = await ucl.join_chat(invite_link)
+                        print(f"DEBUG: Account #{acc_num} joined chat: {chat.title}")
+                    except UserAlreadyParticipant:
+                        print(f"DEBUG: Account #{acc_num} already in chat")
+                    except Exception as e:
+                        print(f"DEBUG: Account #{acc_num} failed to join: {e}")
+                        acc_failed += 1
+                        failed += 1
+                        continue
+                    
+                    # Get chat ID
+                    chat_obj = await ucl.get_chat(invite_link)
+                    
+                    # Report the peer
+                    await ucl.invoke(  
+                        ReportPeer(  
+                            peer=await ucl.resolve_peer(chat_obj.id),  
+                            reason=reason_obj,  
+                            message=f"Report {report_num} from Account #{acc_num}"  
+                        )  
+                    )  
+                    
+                    acc_success += 1  
+                    success += 1
+                    print(f"DEBUG: Account #{acc_num} report #{report_num} successful")
+                      
+                except Exception as e:  
+                    error = str(e)  
+                    print(f"DEBUG: Account #{acc_num} report #{report_num} failed: {error}")
+                    
+                    if "FLOOD_WAIT" in error:
+                        wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
+                        if wait_match:
+                            wait_time = int(wait_match.group(1))
+                            print(f"DEBUG: Flood wait for {wait_time} seconds")
+                            await asyncio.sleep(wait_time)
+                    
+                    if "USER_BOT" not in error and "PHONE_NOT" not in error:  
+                        acc_failed += 1  
+                        failed += 1  
+                  
+                await asyncio.sleep(2)
+              
+            if acc_success > 0:  
+                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
+            if acc_failed > 0:  
+                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")
+    
+    # Message report
+    elif report_type == "message":  
         parsed = data["parsed"]  
         chat_id, msg_id = parsed  
           
         # Convert to proper chat ID format  
         if not chat_id.startswith('-'):  
-            chat_id = f"-100{chat_id}"  
-          
+            chat_id = f"-100{chat_id}"
+            
         for acc_num, ucl in user_clients.items():  
             acc_success = 0  
             acc_failed = 0  
@@ -566,92 +762,38 @@ async def execute_report(client, message):
                     # Get chat first to ensure we can access it  
                     chat = await ucl.get_chat(int(chat_id))  
                       
-                    # Report the message using ReportPeer for messages  
-                    await ucl.invoke(  
-                        ReportPeer(  
-                            peer=await ucl.resolve_peer(int(chat_id)),  
-                            reason=reason_obj,  
-                            message=f"Report {report_num}"  
-                        )  
-                    )  
+                    # Report the message using Report for messages
+                    await ucl.invoke(
+                        Report(
+                            peer=await ucl.resolve_peer(int(chat_id)),
+                            id=[int(msg_id)],
+                            reason=reason_obj,
+                            message=f"Report {report_num}"
+                        )
+                    )
+                    
                     acc_success += 1  
                     success += 1  
                 except Exception as e:  
                     error = str(e)  
+                    print(f"DEBUG: Account #{acc_num} message report failed: {error}")
+                    
+                    if "FLOOD_WAIT" in error:
+                        wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
+                        if wait_match:
+                            wait_time = int(wait_match.group(1))
+                            await asyncio.sleep(wait_time)
+                    
                     if "PHONE_NOT" not in error and "USER_BOT" not in error:  
                         acc_failed += 1  
                         failed += 1  
                   
-                await asyncio.sleep(0.3)  
+                await asyncio.sleep(2)  
               
             if acc_success > 0:  
                 results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
             if acc_failed > 0:  
-                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")  
-    
-    # Bot/Channel username report  
-    elif report_type == "bot_or_channel":  
-        username = data["target"]  
-          
-        for acc_num, ucl in user_clients.items():  
-            acc_success = 0  
-            acc_failed = 0  
-              
-            for report_num in range(1, MAX_REPORTS + 1):  
-                try:  
-                    await ucl.invoke(  
-                        ReportPeer(  
-                            peer=await ucl.resolve_peer(username),  
-                            reason=reason_obj,  
-                            message=f"Report {report_num}"  
-                        )  
-                    )  
-                    acc_success += 1  
-                    success += 1  
-                except Exception as e:  
-                    error = str(e)  
-                    if "PHONE_NOT" not in error and "USER_BOT" not in error:  
-                        acc_failed += 1  
-                        failed += 1  
-                  
-                await asyncio.sleep(0.3)  
-              
-            if acc_success > 0:  
-                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
-            if acc_failed > 0:  
-                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")  
-    
-    # Channel link report  
-    elif report_type == "channel":  
-        username = data["target"]  
-          
-        for acc_num, ucl in user_clients.items():  
-            acc_success = 0  
-            acc_failed = 0  
-              
-            for report_num in range(1, MAX_REPORTS + 1):  
-                try:  
-                    await ucl.invoke(  
-                        ReportPeer(  
-                            peer=await ucl.resolve_peer(username),  
-                            reason=reason_obj,  
-                            message=f"Report {report_num}"  
-                        )  
-                    )  
-                    acc_success += 1  
-                    success += 1  
-                except Exception as e:  
-                    error = str(e)  
-                    if "PHONE_NOT" not in error and "USER_BOT" not in error:  
-                        acc_failed += 1  
-                        failed += 1  
-                  
-                await asyncio.sleep(0.3)  
-              
-            if acc_success > 0:  
-                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
-            if acc_failed > 0:  
-                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")  
+                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")
     
     # Send results  
     result_text = f"📊 **Report Results**\n\n"  
