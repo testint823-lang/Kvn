@@ -433,7 +433,7 @@ async def check_command(client, message):
     
     await status.edit_text(result_text)
 
-# ==================== REPORT COMMAND ====================
+# ==================== REPORT COMMAND (PRIVATE CHAT) ====================
 
 @bot.on_message(filters.command("report") & filters.private)
 @owner_only
@@ -521,6 +521,151 @@ async def report_command(client, message):
         "Is the target public or private?",  
         reply_markup=keyboard  
     )
+
+# ==================== REPORT IN LOGGER GROUP (WITH VERIFICATION) ====================
+
+@bot.on_message(filters.command("report") & filters.group)
+@owner_only
+async def report_in_logger_group(client, message):
+    """Handle /report command in logger group with verification step"""
+    
+    # Check if this is the logger group
+    if message.chat.id != LOGGER_GROUP_ID:
+        return
+    
+    # Check if replying to a message with a link
+    if not message.reply_to_message or not message.reply_to_message.text:
+        await message.reply_text(
+            "❌ Please reply to a message link with /report command!\n\n"
+            "Example: Reply to a message like `t.me/channelname/123`"
+        )
+        return
+    
+    target = message.reply_to_message.text.strip()
+    print(f"DEBUG: Target in logger group: {target}")
+    
+    # Parse the message link
+    parsed = parse_message_link(target)
+    if not parsed:
+        await message.reply_text(
+            "❌ Invalid message link format!\n\n"
+            "Please provide a valid Telegram message link like:\n"
+            "• `t.me/channelname/123`\n"
+            "• `t.me/c/chatid/123`"
+        )
+        return
+    
+    chat_identifier, msg_id = parsed
+    print(f"DEBUG: Parsed - Chat: {chat_identifier}, Msg ID: {msg_id}")
+    
+    # Store report data with verification flag
+    report_data[OWNER_ID] = {
+        "step": "verification",
+        "type": "message",
+        "target": target,
+        "parsed": parsed,
+        "message_id": message.id,  # Store the command message ID for later
+        "chat_id": message.chat.id
+    }
+    
+    # Step 1: Pick one assistant account to test access
+    if not user_clients:
+        await message.reply_text("❌ No active assistant accounts!")
+        return
+    
+    # Pick the first working assistant
+    test_acc_num = list(user_clients.keys())[0]
+    test_client = user_clients[test_acc_num]
+    
+    status_msg = await message.reply_text(
+        f"🔍 **Verification Step 1/2**\n\n"
+        f"Testing access with Assistant #{test_acc_num}...\n"
+        f"Target: `{target}`"
+    )
+    
+    try:
+        # Resolve chat identifier to numeric ID
+        if not chat_identifier.startswith('-100') and not chat_identifier.startswith('-'):
+            # It's a username, get the chat info
+            chat = await test_client.get_chat(chat_identifier)
+            chat_id = chat.id
+            chat_title = chat.title
+        else:
+            # Already a numeric ID
+            chat_id = int(chat_identifier)
+            chat = await test_client.get_chat(chat_id)
+            chat_title = chat.title
+            
+        print(f"DEBUG: Resolved to Chat ID: {chat_id}, Title: {chat_title}")
+        
+        # Try to get the specific message
+        try:
+            msg = await test_client.get_messages(chat_id, int(msg_id))
+            
+            # Forward the message to logger group for verification
+            forwarded_msg = await test_client.forward_messages(
+                LOGGER_GROUP_ID,
+                chat_id,
+                int(msg_id)
+            )
+            
+            # Update status
+            await status_msg.edit_text(
+                f"✅ **Verification Step 1/2 - SUCCESS**\n\n"
+                f"Assistant #{test_acc_num} successfully accessed the message!\n"
+                f"**Channel:** {chat_title}\n"
+                f"**Message ID:** {msg_id}\n\n"
+                f"📨 Message forwarded above for verification."
+            )
+            
+            # Store the forwarded message ID for context
+            report_data[OWNER_ID]["forwarded_msg_id"] = forwarded_msg.id
+            report_data[OWNER_ID]["chat_id_resolved"] = chat_id
+            report_data[OWNER_ID]["chat_title"] = chat_title
+            report_data[OWNER_ID]["test_acc_num"] = test_acc_num
+            
+            # Step 2: Ask for confirmation with buttons
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ CONFIRM - Send Reports", callback_data=f"confirm_report_{chat_id}_{msg_id}")],
+                [InlineKeyboardButton("❌ CANCEL", callback_data="cancel_report")]
+            ])
+            
+            await message.reply_text(
+                f"⚠️ **Verification Step 2/2 - CONFIRMATION REQUIRED**\n\n"
+                f"**Target Confirmed:**\n"
+                f"• Channel: {chat_title}\n"
+                f"• Message ID: {msg_id}\n"
+                f"• Link: `{target}`\n\n"
+                f"**Will Report As:** Child Abuse\n"
+                f"**Accounts Ready:** {len(user_clients)}\n"
+                f"**Reports per Account:** {MAX_REPORTS}\n"
+                f"**Total Reports:** {len(user_clients) * MAX_REPORTS}\n\n"
+                f"Click CONFIRM to proceed with mass reporting:",
+                reply_markup=keyboard
+            )
+            
+        except Exception as e:
+            await status_msg.edit_text(
+                f"❌ **Verification FAILED - Cannot Access Message**\n\n"
+                f"Assistant #{test_acc_num} could not access the specific message.\n\n"
+                f"**Error:** `{str(e)[:100]}`\n\n"
+                f"Possible reasons:\n"
+                f"• Message doesn't exist\n"
+                f"• Assistant is blocked from channel\n"
+                f"• Message was deleted\n"
+                f"• Private channel access needed"
+            )
+            
+    except Exception as e:
+        await status_msg.edit_text(
+            f"❌ **Verification FAILED - Cannot Access Channel**\n\n"
+            f"Assistant #{test_acc_num} could not access the channel.\n\n"
+            f"**Error:** `{str(e)[:100]}`\n\n"
+            f"Possible reasons:\n"
+            f"• Channel is private (need invite)\n"
+            f"• Channel doesn't exist\n"
+            f"• Assistant is blocked"
+        )
 
 # ==================== HANDLE USER INPUT (for links/usernames) ====================
 
@@ -641,6 +786,139 @@ async def select_reason(client, callback):
     
     await callback.answer()  
     await execute_report(client, callback.message)
+
+# ==================== CONFIRMATION HANDLER ====================
+
+@bot.on_callback_query(filters.regex("^confirm_report_"))
+@owner_only
+async def confirm_report(client, callback):
+    """Handle confirmation for mass reporting"""
+    
+    # Extract data from callback
+    data_parts = callback.data.split("_")
+    chat_id = data_parts[2]
+    msg_id = data_parts[3]
+    
+    if OWNER_ID not in report_data:
+        await callback.answer("Session expired! Start over.", show_alert=True)
+        return
+    
+    # Update the message to show "Starting reports..."
+    await callback.message.edit_text(
+        f"🚀 **Starting Mass Reports**\n\n"
+        f"Confirmed target:\n"
+        f"• Chat ID: `{chat_id}`\n"
+        f"• Message ID: `{msg_id}`\n\n"
+        f"⏳ Sending {len(user_clients) * MAX_REPORTS} reports from {len(user_clients)} accounts...\n"
+        f"This may take several minutes..."
+    )
+    
+    await callback.answer("Starting mass reports...")
+    
+    # Execute the actual reporting
+    await execute_verified_report(client, callback.message, chat_id, msg_id)
+
+@bot.on_callback_query(filters.regex("^cancel_report$"))
+@owner_only
+async def cancel_report(client, callback):
+    """Handle report cancellation"""
+    
+    if OWNER_ID in report_data:
+        del report_data[OWNER_ID]
+    
+    await callback.message.edit_text(
+        "❌ **Report Cancelled**\n\n"
+        "No reports were sent. Use /report again to start over."
+    )
+    await callback.answer("Report cancelled")
+
+# ==================== EXECUTE VERIFIED REPORT ====================
+
+async def execute_verified_report(client, message, chat_id, msg_id):
+    """Execute mass reporting after verification"""
+    
+    if not user_clients:
+        await message.edit_text("❌ No active accounts!")
+        return
+    
+    success = 0
+    failed = 0
+    results = []
+    working_accounts = list(user_clients.items())
+    
+    reason_name, reason_obj = REPORT_REASONS["child_abuse"]
+    
+    # Round robin reporting
+    for report_num in range(MAX_REPORTS):
+        for acc_num, ucl in working_accounts:
+            try:
+                print(f"DEBUG: Account #{acc_num} reporting message {msg_id} (Report #{report_num + 1})")
+                
+                # Report the specific message
+                await ucl.invoke(
+                    Report(
+                        peer=await ucl.resolve_peer(int(chat_id)),
+                        id=[int(msg_id)],
+                        reason=reason_obj,
+                        message=f"Child Abuse Content - Report {report_num + 1} from Account #{acc_num}"
+                    )
+                )
+                
+                success += 1
+                print(f"✅ Account #{acc_num} report #{report_num + 1} successful")
+                results.append(f"✅ Acc #{acc_num}: Report {report_num + 1}")
+                
+            except Exception as e:
+                error = str(e)
+                print(f"DEBUG: Account #{acc_num} failed: {error}")
+                
+                # Handle flood waits
+                if "FLOOD_WAIT" in error:
+                    wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
+                    if wait_match:
+                        wait_time = int(wait_match.group(1))
+                        print(f"DEBUG: Flood wait for {wait_time} seconds")
+                        await asyncio.sleep(wait_time)
+                
+                if "USER_BOT" not in error and "PHONE_NOT" not in error:
+                    failed += 1
+                    results.append(f"❌ Acc #{acc_num}: Failed")
+            
+            # Random delay
+            delay = random.uniform(3, 7)
+            await asyncio.sleep(delay)
+    
+    # Final results
+    result_text = f"📊 **Mass Report Completed**\n\n"
+    result_text += f"🎯 Target Message ID: `{msg_id}`\n"
+    result_text += f"📨 Reason: {reason_name}\n"
+    result_text += f"✅ Successful Reports: {success}\n"
+    result_text += f"❌ Failed Reports: {failed}\n"
+    result_text += f"👥 Accounts Used: {len(working_accounts)}\n"
+    result_text += f"🔄 Reports per Account: {MAX_REPORTS}\n\n"
+    
+    if results:
+        result_text += "**Report Summary:**\n"
+        # Group by account
+        account_results = {}
+        for r in results:
+            if "Acc #" in r:
+                acc_num = r.split("Acc #")[1].split(":")[0]
+                if acc_num not in account_results:
+                    account_results[acc_num] = {"success": 0, "failed": 0}
+                if "✅" in r:
+                    account_results[acc_num]["success"] += 1
+                elif "❌" in r:
+                    account_results[acc_num]["failed"] += 1
+        
+        for acc_num, stats in account_results.items():
+            result_text += f"• Acc #{acc_num}: ✅{stats['success']} ❌{stats['failed']}\n"
+    
+    await message.edit_text(result_text)
+    
+    # Clear report data
+    if OWNER_ID in report_data:
+        del report_data[OWNER_ID]
 
 # ==================== EXECUTE REPORT ====================
 
