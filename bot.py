@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import signal
 import re
 import time
+import random
 
 load_dotenv()
 
@@ -32,7 +33,7 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 LOGGER_GROUP_ID = int(os.getenv("LOGGER_GROUP_ID", "0"))
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
-MAX_REPORTS = int(os.getenv("MAX_REPORTS", "1"))  # Default 1 report per account
+MAX_REPORTS = int(os.getenv("MAX_REPORTS", "10"))  # Default 10 reports per account
 
 # Load session strings
 def load_session_strings():
@@ -64,6 +65,7 @@ REPORT_REASONS = {
 user_clients = {}
 report_data = {}
 logger_group_invite_link = None
+assistant_status = {}  # Track assistant status
 
 # ==================== BOT INSTANCE ====================
 
@@ -208,6 +210,7 @@ async def generate_invite_link():
 # ==================== CONNECT ACCOUNTS ====================
 
 async def connect_all_accounts():
+    global assistant_status
     
     print("=" * 60)  
     print(f"🔗 Connecting {TOTAL_ACCOUNTS} accounts...")  
@@ -222,17 +225,27 @@ async def connect_all_accounts():
                 api_id=API_ID,  
                 api_hash=API_HASH,  
                 session_string=session_string,  
-                no_updates=True  
+                in_memory=True
             )  
               
             await client.start()  
             me = await client.get_me()  
             print(f"✅ Account #{acc_num}: {me.first_name} (@{me.username or 'No username'})")  
               
-            user_clients[acc_num] = client  
+            user_clients[acc_num] = client
+            assistant_status[acc_num] = {
+                "id": me.id,
+                "username": me.username,
+                "first_name": me.first_name,
+                "status": "connected"
+            }
               
         except Exception as e:  
             print(f"❌ Account #{acc_num} failed: {e}")  
+            assistant_status[acc_num] = {
+                "status": "failed",
+                "error": str(e)[:100]
+            }
     
     print("=" * 60)  
     print(f"✅ {len(user_clients)}/{TOTAL_ACCOUNTS} accounts connected!")  
@@ -275,8 +288,9 @@ async def setup_logger_group():
             joined_count += 1  
         except Exception as e:  
             print(f"❌ Account #{acc_num} failed to join: {e}")  
+            assistant_status[acc_num]["logger_status"] = f"Failed: {str(e)[:50]}"
           
-        await asyncio.sleep(0.5)  
+        await asyncio.sleep(1)  
     
     print("=" * 60)  
     print(f"✅ {joined_count}/{len(user_clients)} accounts joined successfully!")  
@@ -288,12 +302,14 @@ async def setup_logger_group():
         try:  
             await client.send_message(  
                 LOGGER_GROUP_ID,  
-                f"✅ **Assistant Started**\n\nAccount #{acc_num} is ready!"  
+                f"✅ **Assistant Started**\n\nAccount #{acc_num} is ready!\n\nUser ID: `{assistant_status[acc_num]['id']}`"
             )  
             print(f"✅ Account #{acc_num} sent startup message")  
-            await asyncio.sleep(0.5)  
+            assistant_status[acc_num]["logger_status"] = "active"
+            await asyncio.sleep(1)  
         except Exception as e:  
             print(f"❌ Account #{acc_num} failed to send: {e}")  
+            assistant_status[acc_num]["logger_status"] = f"Failed to send: {str(e)[:50]}"
     
     print("=" * 60)  
     print("✅ Logger group setup complete!")  
@@ -341,7 +357,7 @@ async def stats_command(client, message):
         for acc_num, cl in user_clients.items():  
             try:  
                 me = await cl.get_me()  
-                text += f"• Account #{acc_num} - {me.first_name}\n"  
+                text += f"• Account #{acc_num} - {me.first_name} (@{me.username or 'N/A'})\n"  
             except:  
                 text += f"• Account #{acc_num} - Error\n"  
     
@@ -373,29 +389,49 @@ async def check_command(client, message):
         await message.reply_text("❌ No active sessions!")  
         return  
     
-    status = await message.reply_text(f"🔍 Testing {len(user_clients)} accounts...")  
+    status = await message.reply_text(f"🔍 Testing {len(user_clients)} accounts...\nPlease wait...")  
     
     success = 0  
-    failed = 0  
+    failed = 0
+    results = []
     
+    # Send test messages from all accounts
     for acc_num, cl in user_clients.items():  
         try:  
-            await cl.send_message(  
+            sent_msg = await cl.send_message(  
                 message.chat.id,  
-                f"✅ **Account #{acc_num} - Working**"  
-            )  
-            success += 1  
-            await asyncio.sleep(0.5)  
+                f"✅ **Account #{acc_num} - Working**\n\nUser ID: `{assistant_status.get(acc_num, {}).get('id', 'N/A')}`"  
+            )
+            
+            # Try to delete the test message after 5 seconds
+            await asyncio.sleep(5)
+            try:
+                await sent_msg.delete()
+            except:
+                pass
+                
+            success += 1
+            results.append(f"✅ Account #{acc_num}: Working")
+            
         except Exception as e:  
-            await message.reply_text(f"❌ Account #{acc_num}: {str(e)[:40]}")  
-            failed += 1  
+            error_msg = str(e)
+            await message.reply_text(f"❌ Account #{acc_num}: {error_msg[:100]}")  
+            failed += 1
+            results.append(f"❌ Account #{acc_num}: {error_msg[:50]}")
+        
+        await asyncio.sleep(2)  # Increased delay between checks
     
-    await status.edit_text(  
-        f"✅ **Check Complete!**\n\n"  
-        f"✅ Working: {success}\n"  
-        f"❌ Failed: {failed}\n"  
-        f"📊 Total: {len(user_clients)}"  
-    )
+    result_text = f"✅ **Check Complete!**\n\n"  
+    result_text += f"✅ Working: {success}\n"  
+    result_text += f"❌ Failed: {failed}\n"  
+    result_text += f"📊 Total: {len(user_clients)}\n\n"
+    
+    if results:
+        result_text += "\n".join(results[:15])
+        if len(results) > 15:
+            result_text += f"\n\n... and {len(results) - 15} more"
+    
+    await status.edit_text(result_text)
 
 # ==================== REPORT COMMAND ====================
 
@@ -463,7 +499,7 @@ async def report_command(client, message):
             username = target.replace('@', '').strip()
             report_data[OWNER_ID] = {  
                 "step": "ask_reason",  
-                "type": "bot_or_channel",  
+                "type": "public_chat",  # Changed from bot_or_channel to public_chat
                 "target": username  
             }  
             print(f"DEBUG: Detected as username: @{username}")
@@ -570,11 +606,11 @@ async def show_reason_keyboard(msg):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚫 Spam", callback_data="reason_spam")],
         [InlineKeyboardButton("⚔️ Violence", callback_data="reason_violence")],
-        [InlineKeyboardButton("🔞 Pornography", callback_data="reason_pornography")],
+        [InlineKeyboardButton("🔞 Pornography/Nudity", callback_data="reason_pornography")],
         [InlineKeyboardButton("👶 Child Abuse", callback_data="reason_child_abuse")],
         [InlineKeyboardButton("©️ Copyright", callback_data="reason_copyright")],
         [InlineKeyboardButton("🎭 Fake", callback_data="reason_fake")],
-        [InlineKeyboardButton("💊 Drugs", callback_data="reason_illegal_drugs")]
+        [InlineKeyboardButton("💊 Illegal Drugs", callback_data="reason_illegal_drugs")]
     ])
     
     await msg.edit_text(  
@@ -626,19 +662,32 @@ async def execute_report(client, message):
     
     print(f"DEBUG: Starting report. Type: {report_type}, Target: {target}, Reason: {reason_key}")
     
+    # Get list of working accounts
+    working_accounts = list(user_clients.items())
+    
+    if not working_accounts:
+        await message.edit_text("❌ No working accounts!")
+        return
+    
+    # For CP content, use Child Abuse reason specifically
+    if reason_key == "child_abuse":
+        print("⚠️ Reporting CP content - Using special handling")
+        # Add additional text for CP reports
+        report_text = "CP Child Abuse Content"
+    else:
+        report_text = "Inappropriate Content"
+    
     # Public chat/channel report (username based)
     if report_type in ["public_chat", "bot_or_channel", "channel"]:
         username = target
         
-        for acc_num, ucl in user_clients.items():  
-            acc_success = 0  
-            acc_failed = 0  
-              
-            for report_num in range(1, MAX_REPORTS + 1):  
-                try:  
-                    print(f"DEBUG: Account #{acc_num} attempting to report @{username} (report #{report_num})")
+        # ROUND ROBIN REPORTING: Each account sends one report at a time
+        for report_num in range(MAX_REPORTS):
+            for acc_num, ucl in working_accounts:
+                try:
+                    print(f"DEBUG: Account #{acc_num} attempting report #{report_num + 1} for @{username}")
                     
-                    # First try to get chat info
+                    # Try to get chat info first
                     try:
                         chat = await ucl.get_chat(username)
                         print(f"DEBUG: Account #{acc_num} can see chat: {chat.title}")
@@ -646,21 +695,23 @@ async def execute_report(client, message):
                         print(f"DEBUG: Account #{acc_num} cannot access chat @{username}: {e}")
                     
                     # Report the peer
-                    await ucl.invoke(  
-                        ReportPeer(  
-                            peer=await ucl.resolve_peer(username),  
-                            reason=reason_obj,  
-                            message=f"Report {report_num} from Account #{acc_num}"  
-                        )  
-                    )  
+                    await ucl.invoke(
+                        ReportPeer(
+                            peer=await ucl.resolve_peer(username),
+                            reason=reason_obj,
+                            message=f"{report_text} - Report {report_num + 1} from Account #{acc_num}"
+                        )
+                    )
                     
-                    acc_success += 1  
                     success += 1
-                    print(f"DEBUG: Account #{acc_num} report #{report_num} successful")
-                      
-                except Exception as e:  
-                    error = str(e)  
-                    print(f"DEBUG: Account #{acc_num} report #{report_num} failed: {error}")
+                    print(f"✅ Account #{acc_num} report #{report_num + 1} successful")
+                    
+                    # Add to results
+                    results.append(f"✅ Acc #{acc_num}: Report {report_num + 1}")
+                    
+                except Exception as e:
+                    error = str(e)
+                    print(f"DEBUG: Account #{acc_num} report #{report_num + 1} failed: {error}")
                     
                     if "FLOOD_WAIT" in error:
                         # Extract wait time
@@ -670,112 +721,116 @@ async def execute_report(client, message):
                             print(f"DEBUG: Flood wait for {wait_time} seconds")
                             await asyncio.sleep(wait_time)
                     
-                    # Don't count USER_BOT and PHONE_NOT errors as failures
-                    if "USER_BOT" not in error and "PHONE_NOT" not in error:  
-                        acc_failed += 1  
-                        failed += 1  
-                  
-                await asyncio.sleep(2)  # Increased delay between reports
-              
-            if acc_success > 0:  
-                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
-            if acc_failed > 0:  
-                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")
+                    # Don't count certain errors as failures
+                    if "USER_BOT" not in error and "PHONE_NOT" not in error and "USERNAME_NOT_OCCUPIED" not in error:
+                        failed += 1
+                        results.append(f"❌ Acc #{acc_num}: Failed")
+                    else:
+                        print(f"DEBUG: Skipping error for account #{acc_num}: {error[:50]}")
+                
+                # Random delay between 3-7 seconds to avoid detection
+                delay = random.uniform(3, 7)
+                await asyncio.sleep(delay)
     
     # Private chat report (invite link based)
     elif report_type == "private_chat":
         invite_link = target
         
-        for acc_num, ucl in user_clients.items():  
-            acc_success = 0  
-            acc_failed = 0  
-              
-            for report_num in range(1, MAX_REPORTS + 1):  
-                try:  
-                    print(f"DEBUG: Account #{acc_num} attempting to report private chat (report #{report_num})")
+        # First join all accounts to the private chat
+        joined_accounts = []
+        for acc_num, ucl in working_accounts:
+            try:
+                await ucl.join_chat(invite_link)
+                print(f"DEBUG: Account #{acc_num} joined private chat")
+                joined_accounts.append((acc_num, ucl))
+            except UserAlreadyParticipant:
+                print(f"DEBUG: Account #{acc_num} already in chat")
+                joined_accounts.append((acc_num, ucl))
+            except Exception as e:
+                print(f"DEBUG: Account #{acc_num} failed to join: {e}")
+        
+        if not joined_accounts:
+            await message.edit_text("❌ No accounts could join the private chat!")
+            return
+        
+        # Get chat ID for reporting
+        chat_id = None
+        try:
+            temp_client = joined_accounts[0][1]
+            chat = await temp_client.get_chat(invite_link)
+            chat_id = chat.id
+            print(f"DEBUG: Chat ID: {chat_id}")
+        except Exception as e:
+            print(f"DEBUG: Failed to get chat ID: {e}")
+        
+        # ROUND ROBIN REPORTING for private chats
+        for report_num in range(MAX_REPORTS):
+            for acc_num, ucl in joined_accounts:
+                try:
+                    print(f"DEBUG: Account #{acc_num} attempting private chat report #{report_num + 1}")
                     
-                    # First join the chat
-                    try:
-                        chat = await ucl.join_chat(invite_link)
-                        print(f"DEBUG: Account #{acc_num} joined chat: {chat.title}")
-                    except UserAlreadyParticipant:
-                        print(f"DEBUG: Account #{acc_num} already in chat")
-                    except Exception as e:
-                        print(f"DEBUG: Account #{acc_num} failed to join: {e}")
-                        acc_failed += 1
-                        failed += 1
-                        continue
+                    await ucl.invoke(
+                        ReportPeer(
+                            peer=await ucl.resolve_peer(chat_id) if chat_id else await ucl.resolve_peer(invite_link),
+                            reason=reason_obj,
+                            message=f"{report_text} - Report {report_num + 1} from Account #{acc_num}"
+                        )
+                    )
                     
-                    # Get chat ID
-                    chat_obj = await ucl.get_chat(invite_link)
-                    
-                    # Report the peer
-                    await ucl.invoke(  
-                        ReportPeer(  
-                            peer=await ucl.resolve_peer(chat_obj.id),  
-                            reason=reason_obj,  
-                            message=f"Report {report_num} from Account #{acc_num}"  
-                        )  
-                    )  
-                    
-                    acc_success += 1  
                     success += 1
-                    print(f"DEBUG: Account #{acc_num} report #{report_num} successful")
-                      
-                except Exception as e:  
-                    error = str(e)  
-                    print(f"DEBUG: Account #{acc_num} report #{report_num} failed: {error}")
+                    print(f"✅ Account #{acc_num} private report #{report_num + 1} successful")
+                    results.append(f"✅ Acc #{acc_num}: Private Report {report_num + 1}")
+                    
+                except Exception as e:
+                    error = str(e)
+                    print(f"DEBUG: Account #{acc_num} private report failed: {error}")
                     
                     if "FLOOD_WAIT" in error:
                         wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
                         if wait_match:
                             wait_time = int(wait_match.group(1))
-                            print(f"DEBUG: Flood wait for {wait_time} seconds")
                             await asyncio.sleep(wait_time)
                     
-                    if "USER_BOT" not in error and "PHONE_NOT" not in error:  
-                        acc_failed += 1  
-                        failed += 1  
-                  
-                await asyncio.sleep(2)
-              
-            if acc_success > 0:  
-                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
-            if acc_failed > 0:  
-                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")
+                    if "USER_BOT" not in error and "PHONE_NOT" not in error:
+                        failed += 1
+                        results.append(f"❌ Acc #{acc_num}: Failed")
+                
+                # Random delay
+                delay = random.uniform(3, 7)
+                await asyncio.sleep(delay)
     
     # Message report
-    elif report_type == "message":  
-        parsed = data["parsed"]  
-        chat_id, msg_id = parsed  
-          
-        # Convert to proper chat ID format  
-        if not chat_id.startswith('-'):  
+    elif report_type == "message":
+        parsed = data["parsed"]
+        chat_id, msg_id = parsed
+        
+        # Convert to proper chat ID format
+        if not chat_id.startswith('-'):
             chat_id = f"-100{chat_id}"
             
-        for acc_num, ucl in user_clients.items():  
-            acc_success = 0  
-            acc_failed = 0  
-              
-            for report_num in range(1, MAX_REPORTS + 1):  
-                try:  
-                    # Get chat first to ensure we can access it  
-                    chat = await ucl.get_chat(int(chat_id))  
-                      
-                    # Report the message using Report for messages
+        # ROUND ROBIN REPORTING for messages
+        for report_num in range(MAX_REPORTS):
+            for acc_num, ucl in working_accounts:
+                try:
+                    # Get chat first to ensure we can access it
+                    chat = await ucl.get_chat(int(chat_id))
+                    
+                    # Report the message
                     await ucl.invoke(
                         Report(
                             peer=await ucl.resolve_peer(int(chat_id)),
                             id=[int(msg_id)],
                             reason=reason_obj,
-                            message=f"Report {report_num}"
+                            message=f"{report_text} - Report {report_num + 1}"
                         )
                     )
                     
-                    acc_success += 1  
-                    success += 1  
-                except Exception as e:  
-                    error = str(e)  
+                    success += 1
+                    print(f"✅ Account #{acc_num} message report #{report_num + 1} successful")
+                    results.append(f"✅ Acc #{acc_num}: Msg Report {report_num + 1}")
+                    
+                except Exception as e:
+                    error = str(e)
                     print(f"DEBUG: Account #{acc_num} message report failed: {error}")
                     
                     if "FLOOD_WAIT" in error:
@@ -784,33 +839,49 @@ async def execute_report(client, message):
                             wait_time = int(wait_match.group(1))
                             await asyncio.sleep(wait_time)
                     
-                    if "PHONE_NOT" not in error and "USER_BOT" not in error:  
-                        acc_failed += 1  
-                        failed += 1  
-                  
-                await asyncio.sleep(2)  
-              
-            if acc_success > 0:  
-                results.append(f"✅ Account #{acc_num}: {acc_success}/{MAX_REPORTS}")  
-            if acc_failed > 0:  
-                results.append(f"⚠️ Account #{acc_num}: {acc_failed} failed")
+                    if "PHONE_NOT" not in error and "USER_BOT" not in error:
+                        failed += 1
+                        results.append(f"❌ Acc #{acc_num}: Failed")
+                
+                # Random delay
+                delay = random.uniform(3, 7)
+                await asyncio.sleep(delay)
     
-    # Send results  
-    result_text = f"📊 **Report Results**\n\n"  
-    result_text += f"✅ Success: {success}\n"  
-    result_text += f"❌ Failed: {failed}\n"  
-    result_text += f"📊 Total: {success + failed}\n"  
-    result_text += f"📨 Reason: {reason_name}\n\n"  
+    # Send results
+    result_text = f"📊 **Report Results**\n\n"
+    result_text += f"🎯 Target: {target}\n"
+    result_text += f"📨 Reason: {reason_name}\n"
+    result_text += f"✅ Success: {success}\n"
+    result_text += f"❌ Failed: {failed}\n"
+    result_text += f"📊 Total: {success + failed}\n"
+    result_text += f"👥 Accounts: {len(working_accounts)}\n\n"
     
-    if results:  
-        result_text += "\n".join(results[:10])  
-        if len(results) > 10:  
-            result_text += f"\n\n... and {len(results) - 10} more"  
+    if results:
+        # Show last 10 results
+        result_text += "**Last Reports:**\n"
+        result_text += "\n".join(results[-10:])
+        if len(results) > 10:
+            result_text += f"\n\n... and {len(results) - 10} more"
     
-    await message.edit_text(result_text)  
+    await message.edit_text(result_text)
     
-    # Clear report data  
-    if OWNER_ID in report_data:  
+    # Also send a copy to logger group if available
+    if LOGGER_GROUP_ID:
+        try:
+            await bot.send_message(
+                LOGGER_GROUP_ID,
+                f"📊 **Report Completed**\n\n"
+                f"🎯 Target: {target}\n"
+                f"📨 Reason: {reason_name}\n"
+                f"✅ Success: {success}\n"
+                f"❌ Failed: {failed}\n"
+                f"👥 Accounts: {len(working_accounts)}"
+            )
+        except Exception as e:
+            print(f"DEBUG: Failed to send to logger: {e}")
+    
+    # Clear report data
+    if OWNER_ID in report_data:
         del report_data[OWNER_ID]
 
 # ==================== STOP ALL CLIENTS ====================
