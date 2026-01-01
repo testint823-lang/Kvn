@@ -854,13 +854,12 @@ async def execute_verified_report(client, message, chat_id, msg_id):
             try:
                 print(f"DEBUG: Account #{acc_num} reporting message {msg_id} (Report #{report_num + 1})")
                 
-                # Report the specific message
+                # Report the specific message - FIXED: removed 'message' parameter
                 await ucl.invoke(
                     Report(
                         peer=await ucl.resolve_peer(int(chat_id)),
                         id=[int(msg_id)],
-                        reason=reason_obj,
-                        message=f"Child Abuse Content - Report {report_num + 1} from Account #{acc_num}"
+                        reason=reason_obj
                     )
                 )
                 
@@ -947,14 +946,6 @@ async def execute_report(client, message):
         await message.edit_text("❌ No working accounts!")
         return
     
-    # For CP content, use Child Abuse reason specifically
-    if reason_key == "child_abuse":
-        print("⚠️ Reporting CP content - Using special handling")
-        # Add additional text for CP reports
-        report_text = "CP Child Abuse Content"
-    else:
-        report_text = "Inappropriate Content"
-    
     # Public chat/channel report (username based)
     if report_type in ["public_chat", "bot_or_channel", "channel"]:
         username = target
@@ -972,12 +963,11 @@ async def execute_report(client, message):
                     except Exception as e:
                         print(f"DEBUG: Account #{acc_num} cannot access chat @{username}: {e}")
                     
-                    # Report the peer
+                    # Report the peer - FIXED: removed 'message' parameter
                     await ucl.invoke(
                         ReportPeer(
                             peer=await ucl.resolve_peer(username),
-                            reason=reason_obj,
-                            message=f"{report_text} - Report {report_num + 1} from Account #{acc_num}"
+                            reason=reason_obj
                         )
                     )
                     
@@ -1047,11 +1037,11 @@ async def execute_report(client, message):
                 try:
                     print(f"DEBUG: Account #{acc_num} attempting private chat report #{report_num + 1}")
                     
+                    # FIXED: removed 'message' parameter
                     await ucl.invoke(
                         ReportPeer(
                             peer=await ucl.resolve_peer(chat_id) if chat_id else await ucl.resolve_peer(invite_link),
-                            reason=reason_obj,
-                            message=f"{report_text} - Report {report_num + 1} from Account #{acc_num}"
+                            reason=reason_obj
                         )
                     )
                     
@@ -1093,13 +1083,12 @@ async def execute_report(client, message):
                     # Get chat first to ensure we can access it
                     chat = await ucl.get_chat(int(chat_id))
                     
-                    # Report the message
+                    # Report the message - FIXED: removed 'message' parameter
                     await ucl.invoke(
                         Report(
                             peer=await ucl.resolve_peer(int(chat_id)),
                             id=[int(msg_id)],
-                            reason=reason_obj,
-                            message=f"{report_text} - Report {report_num + 1}"
+                            reason=reason_obj
                         )
                     )
                     
