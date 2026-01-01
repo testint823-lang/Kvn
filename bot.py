@@ -6,7 +6,8 @@ from pyrogram.raw.functions.messages import Report
 from pyrogram.raw.types import (
     InputReportReasonSpam, InputReportReasonViolence,
     InputReportReasonPornography, InputReportReasonChildAbuse,
-    InputReportReasonCopyright, InputReportReasonFake, InputReportReasonIllegalDrugs
+    InputReportReasonCopyright, InputReportReasonFake, InputReportReasonIllegalDrugs,
+    InputPeerChannel, InputChannel, InputReportReasonOther
 )
 import os
 import asyncio
@@ -58,7 +59,8 @@ REPORT_REASONS = {
     "child_abuse": ("👶 Child Abuse", InputReportReasonChildAbuse()),
     "copyright": ("©️ Copyright", InputReportReasonCopyright()),
     "fake": ("🎭 Fake Account", InputReportReasonFake()),
-    "illegal_drugs": ("💊 Illegal Drugs", InputReportReasonIllegalDrugs())
+    "illegal_drugs": ("💊 Illegal Drugs", InputReportReasonIllegalDrugs()),
+    "other": ("❓ Other", InputReportReasonOther())
 }
 
 # Storage
@@ -755,7 +757,8 @@ async def show_reason_keyboard(msg):
         [InlineKeyboardButton("👶 Child Abuse", callback_data="reason_child_abuse")],
         [InlineKeyboardButton("©️ Copyright", callback_data="reason_copyright")],
         [InlineKeyboardButton("🎭 Fake", callback_data="reason_fake")],
-        [InlineKeyboardButton("💊 Illegal Drugs", callback_data="reason_illegal_drugs")]
+        [InlineKeyboardButton("💊 Illegal Drugs", callback_data="reason_illegal_drugs")],
+        [InlineKeyboardButton("❓ Other", callback_data="reason_other")]
     ])
     
     await msg.edit_text(  
@@ -854,12 +857,13 @@ async def execute_verified_report(client, message, chat_id, msg_id):
             try:
                 print(f"DEBUG: Account #{acc_num} reporting message {msg_id} (Report #{report_num + 1})")
                 
-                # Report the specific message - FIXED: removed 'message' parameter
+                # FIXED: Using ReportPeer instead of Report for message reporting
+                # Report the channel with message reference
                 await ucl.invoke(
-                    Report(
+                    ReportPeer(
                         peer=await ucl.resolve_peer(int(chat_id)),
-                        id=[int(msg_id)],
-                        reason=reason_obj
+                        reason=reason_obj,
+                        message=f"Reporting specific message ID: {msg_id} for Child Abuse content"
                     )
                 )
                 
@@ -963,7 +967,7 @@ async def execute_report(client, message):
                     except Exception as e:
                         print(f"DEBUG: Account #{acc_num} cannot access chat @{username}: {e}")
                     
-                    # Report the peer - FIXED: removed 'message' parameter
+                    # Report the peer
                     await ucl.invoke(
                         ReportPeer(
                             peer=await ucl.resolve_peer(username),
@@ -1037,7 +1041,6 @@ async def execute_report(client, message):
                 try:
                     print(f"DEBUG: Account #{acc_num} attempting private chat report #{report_num + 1}")
                     
-                    # FIXED: removed 'message' parameter
                     await ucl.invoke(
                         ReportPeer(
                             peer=await ucl.resolve_peer(chat_id) if chat_id else await ucl.resolve_peer(invite_link),
@@ -1083,12 +1086,12 @@ async def execute_report(client, message):
                     # Get chat first to ensure we can access it
                     chat = await ucl.get_chat(int(chat_id))
                     
-                    # Report the message - FIXED: removed 'message' parameter
+                    # Report the message - FIXED: Using ReportPeer instead of Report
                     await ucl.invoke(
-                        Report(
+                        ReportPeer(
                             peer=await ucl.resolve_peer(int(chat_id)),
-                            id=[int(msg_id)],
-                            reason=reason_obj
+                            reason=reason_obj,
+                            message=f"Reporting specific message ID: {msg_id}"
                         )
                     )
                     
