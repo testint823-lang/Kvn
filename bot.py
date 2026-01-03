@@ -857,13 +857,14 @@ async def execute_verified_report(client, message, chat_id, msg_id):
             try:
                 print(f"DEBUG: Account #{acc_num} reporting message {msg_id} (Report #{report_num + 1})")
                 
-                # FIXED: Using messages.Report with positional arguments (no keywords!)
+                # FIXED: Using account.ReportPeer instead of messages.Report
+                # messages.Report API changed - now uses 'option:bytes' instead of 'reason'
+                # account.ReportPeer still works for reporting messages
                 await ucl.invoke(
-                    Report(
-                        await ucl.resolve_peer(int(chat_id)),  # peer
-                        [int(msg_id)],                          # id
-                        reason_obj,                             # reason
-                        ""                                      # message
+                    ReportPeer(
+                        peer=await ucl.resolve_peer(int(chat_id)),
+                        reason=reason_obj,
+                        message=f"Message ID: {msg_id}"
                     )
                 )
                 
@@ -1086,13 +1087,14 @@ async def execute_report(client, message):
                     # Get chat first to ensure we can access it
                     chat = await ucl.get_chat(int(chat_id))
                     
-                    # FIXED: Using messages.Report with positional arguments (no keywords!)
+                    # FIXED: Using account.ReportPeer instead of messages.Report
+                    # messages.Report API changed - now uses 'option:bytes' instead of 'reason'
+                    # account.ReportPeer still works for reporting messages
                     await ucl.invoke(
-                        Report(
-                            await ucl.resolve_peer(int(chat_id)),  # peer
-                            [int(msg_id)],                          # id
-                            reason_obj,                             # reason
-                            ""                                      # message
+                        ReportPeer(
+                            peer=await ucl.resolve_peer(int(chat_id)),
+                            reason=reason_obj,
+                            message=f"Message ID: {msg_id}"
                         )
                     )
                     
