@@ -862,8 +862,7 @@ async def execute_verified_report(client, message, chat_id, msg_id):
                     Report(
                         peer=await ucl.resolve_peer(int(chat_id)),
                         id=[int(msg_id)],
-                        reason=reason_obj,
-                        message=f"Child abuse content in message {msg_id}"
+                        reason=reason_obj
                     )
                 )
                 
@@ -1091,8 +1090,7 @@ async def execute_report(client, message):
                         Report(
                             peer=await ucl.resolve_peer(int(chat_id)),
                             id=[int(msg_id)],
-                            reason=reason_obj,
-                            message="Reporting inappropriate content"
+                            reason=reason_obj
                         )
                     )
                     
