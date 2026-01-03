@@ -857,13 +857,13 @@ async def execute_verified_report(client, message, chat_id, msg_id):
             try:
                 print(f"DEBUG: Account #{acc_num} reporting message {msg_id} (Report #{report_num + 1})")
                 
-                # FIXED: Using messages.Report with positional arguments
+                # FIXED: Using messages.Report with positional arguments (no keywords!)
                 await ucl.invoke(
                     Report(
-                        peer=await ucl.resolve_peer(int(chat_id)),
-                        id=[int(msg_id)],
-                        reason=reason_obj,
-                        message=""  # Empty string for message parameter
+                        await ucl.resolve_peer(int(chat_id)),  # peer
+                        [int(msg_id)],                          # id
+                        reason_obj,                             # reason
+                        ""                                      # message
                     )
                 )
                 
@@ -1086,13 +1086,13 @@ async def execute_report(client, message):
                     # Get chat first to ensure we can access it
                     chat = await ucl.get_chat(int(chat_id))
                     
-                    # FIXED: Using messages.Report with positional arguments
+                    # FIXED: Using messages.Report with positional arguments (no keywords!)
                     await ucl.invoke(
                         Report(
-                            peer=await ucl.resolve_peer(int(chat_id)),
-                            id=[int(msg_id)],
-                            reason=reason_obj,
-                            message=""  # Empty string for message parameter
+                            await ucl.resolve_peer(int(chat_id)),  # peer
+                            [int(msg_id)],                          # id
+                            reason_obj,                             # reason
+                            ""                                      # message
                         )
                     )
                     
