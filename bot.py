@@ -57,73 +57,73 @@ REPORT_REASONS = {
     "child_sexual": (
         "👶🔞 Child Sexual Abuse",
         InputReportReasonChildAbuse(),
-        b'\x08\x01',
+        b'\x00',  # Try single byte format
         "CSAM/CP content detected. Immediate action required under child protection laws."
     ),
     "child_physical": (
         "👶⚔️ Child Physical Abuse",
         InputReportReasonChildAbuse(),
-        b'\x08\x02',
+        b'\x01',  # Try single byte format
         "Child physical abuse content detected. Violates child protection regulations."
     ),
     "child_exploitation": (
         "👶💰 Child Exploitation",
         InputReportReasonChildAbuse(),
-        b'\x08\x03',
+        b'\x02',  # Try single byte format
         "Child exploitation content detected. Immediate removal required."
     ),
     "porn_adult": (
         "🔞 Adult Pornography",
         InputReportReasonPornography(),
-        b'\x10\x01',
+        b'\x00',
         "Illegal pornographic content shared without consent."
     ),
     "porn_nonconsensual": (
         "🔞⚠️ Non-consensual Content",
         InputReportReasonPornography(),
-        b'\x10\x02',
+        b'\x01',
         "Non-consensual intimate content. Privacy violation."
     ),
     "violence_graphic": (
         "⚔️ Graphic Violence",
         InputReportReasonViolence(),
-        b'\x18\x01',
+        b'\x00',
         "Graphic violent content. Violates community standards."
     ),
     "violence_threats": (
         "⚔️⚠️ Threats/Terrorism",
         InputReportReasonViolence(),
-        b'\x18\x02',
+        b'\x01',
         "Violent threats or terrorist content detected."
     ),
     "spam": (
         "🚫 Spam",
         InputReportReasonSpam(),
-        None,
+        b'',  # Empty bytes
         "Spam content reported."
     ),
     "copyright": (
         "©️ Copyright Violation",
         InputReportReasonCopyright(),
-        None,
+        b'',
         "Copyright violation detected."
     ),
     "fake": (
         "🎭 Fake Account/Impersonation",
         InputReportReasonFake(),
-        None,
+        b'',
         "Fake account or impersonation detected."
     ),
     "illegal_drugs": (
         "💊 Illegal Drugs",
         InputReportReasonIllegalDrugs(),
-        None,
+        b'',
         "Illegal drug content detected."
     ),
     "other": (
         "❓ Other Violation",
         InputReportReasonOther(),
-        None,
+        b'',
         "Content violates Telegram Terms of Service."
     )
 }
@@ -692,35 +692,50 @@ async def execute_verified_report(client, message, chat_id, msg_id):
     working_accounts = list(user_clients.items())
     reason_name, reason_obj, option_bytes, comment_text = REPORT_REASONS["child_sexual"]
     
-    # Convert option_bytes to proper format if needed
-    if option_bytes:
-        report_option = option_bytes
-    else:
-        report_option = b'\x08\x01'  # Default: Child Sexual Abuse
+    # Try multiple byte formats until one works
+    option_formats_to_try = [
+        b'\x00',           # Format 1: Single byte 0
+        b'\x01',           # Format 2: Single byte 1
+        b'',               # Format 3: Empty bytes
+        b'\x00\x00',       # Format 4: Double zero
+        b'\x01\x00',       # Format 5: Little-endian 1
+        b'\x00\x01',       # Format 6: Big-endian 1
+    ]
     
     for report_num in range(MAX_REPORTS):
         for acc_num, ucl in working_accounts:
-            try:
-                # NEW API: messages.Report only accepts 'peer', 'id', 'option', 'message'
-                # NO 'reason' parameter!
-                await ucl.invoke(
-                    Report(
-                        peer=await ucl.resolve_peer(int(chat_id)),
-                        id=[int(msg_id)],
-                        option=report_option,  # Only option bytes, no reason object
-                        message=comment_text
+            report_sent = False
+            for option_format in option_formats_to_try:
+                try:
+                    await ucl.invoke(
+                        Report(
+                            peer=await ucl.resolve_peer(int(chat_id)),
+                            id=[int(msg_id)],
+                            option=option_format,
+                            message=comment_text
+                        )
                     )
-                )
-                success += 1
-                print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS (NEW API)")
-            except Exception as e:
-                error = str(e)
-                print(f"❌ Account #{acc_num} failed: {error}")
-                if "FLOOD_WAIT" in error:
-                    wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
-                    if wait_match:
-                        await asyncio.sleep(int(wait_match.group(1)))
+                    success += 1
+                    print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS with format: {option_format.hex()}")
+                    report_sent = True
+                    break  # Success - don't try other formats
+                except Exception as e:
+                    error = str(e)
+                    if "OPTION_INVALID" not in error:
+                        # Different error - log and break
+                        print(f"❌ Account #{acc_num} error: {error[:100]}")
+                        if "FLOOD_WAIT" in error:
+                            wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
+                            if wait_match:
+                                await asyncio.sleep(int(wait_match.group(1)))
+                        break
+                    # OPTION_INVALID - try next format
+                    continue
+            
+            if not report_sent:
                 failed += 1
+                print(f"❌ Account #{acc_num} report #{report_num + 1} FAILED - All formats tried")
+            
             await asyncio.sleep(random.uniform(3, 7))
     await message.edit_text(
         f"📊 **Mass Report Completed**\n\n"
@@ -828,32 +843,47 @@ async def execute_report(client, message):
         if not chat_id.startswith('-'):
             chat_id = f"-100{chat_id}"
         
-        # Prepare option bytes
-        report_option = option_bytes if option_bytes else b'\x08\x01'
+        # Try multiple byte formats
+        option_formats_to_try = [
+            b'\x00',           # Format 1
+            b'\x01',           # Format 2
+            b'',               # Format 3: Empty
+            b'\x00\x00',       # Format 4
+            b'\x01\x00',       # Format 5
+            option_bytes if option_bytes else b'\x00'  # Format 6: From config
+        ]
         
         for report_num in range(MAX_REPORTS):
             for acc_num, ucl in working_accounts:
-                try:
-                    # NEW API: Only 'peer', 'id', 'option', 'message' - NO 'reason'!
-                    await ucl.invoke(
-                        Report(
-                            peer=await ucl.resolve_peer(int(chat_id)),
-                            id=[int(msg_id)],
-                            option=report_option,  # Only option bytes
-                            message=comment_text
+                report_sent = False
+                for option_format in option_formats_to_try:
+                    try:
+                        await ucl.invoke(
+                            Report(
+                                peer=await ucl.resolve_peer(int(chat_id)),
+                                id=[int(msg_id)],
+                                option=option_format,
+                                message=comment_text
+                            )
                         )
-                    )
-                    success += 1
-                    print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS (NEW API)")
-                except Exception as e:
-                    error = str(e)
-                    print(f"❌ Account #{acc_num} failed: {error}")
-                    if "FLOOD_WAIT" in error:
-                        wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
-                        if wait_match:
-                            await asyncio.sleep(int(wait_match.group(1)))
-                    if "PHONE_NOT" not in error and "USER_BOT" not in error:
-                        failed += 1
+                        success += 1
+                        print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS with format: {option_format.hex() if option_format else 'empty'}")
+                        report_sent = True
+                        break
+                    except Exception as e:
+                        error = str(e)
+                        if "OPTION_INVALID" not in error:
+                            print(f"❌ Account #{acc_num} error: {error[:100]}")
+                            if "FLOOD_WAIT" in error:
+                                wait_match = re.search(r'FLOOD_WAIT_(\d+)', error)
+                                if wait_match:
+                                    await asyncio.sleep(int(wait_match.group(1)))
+                            break
+                        continue
+                
+                if not report_sent:
+                    failed += 1
+                
                 await asyncio.sleep(random.uniform(3, 7))
     
     # Send results
