@@ -691,20 +691,28 @@ async def execute_verified_report(client, message, chat_id, msg_id):
     failed = 0
     working_accounts = list(user_clients.items())
     reason_name, reason_obj, option_bytes, comment_text = REPORT_REASONS["child_sexual"]
+    
+    # Convert option_bytes to proper format if needed
+    if option_bytes:
+        report_option = option_bytes
+    else:
+        report_option = b'\x08\x01'  # Default: Child Sexual Abuse
+    
     for report_num in range(MAX_REPORTS):
         for acc_num, ucl in working_accounts:
             try:
+                # NEW API: messages.Report only accepts 'peer', 'id', 'option', 'message'
+                # NO 'reason' parameter!
                 await ucl.invoke(
                     Report(
                         peer=await ucl.resolve_peer(int(chat_id)),
                         id=[int(msg_id)],
-                        reason=reason_obj,
-                        message=comment_text,
-                        option=option_bytes
+                        option=report_option,  # Only option bytes, no reason object
+                        message=comment_text
                     )
                 )
                 success += 1
-                print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS")
+                print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS (NEW API)")
             except Exception as e:
                 error = str(e)
                 print(f"❌ Account #{acc_num} failed: {error}")
@@ -819,20 +827,24 @@ async def execute_report(client, message):
         chat_id, msg_id = parsed
         if not chat_id.startswith('-'):
             chat_id = f"-100{chat_id}"
+        
+        # Prepare option bytes
+        report_option = option_bytes if option_bytes else b'\x08\x01'
+        
         for report_num in range(MAX_REPORTS):
             for acc_num, ucl in working_accounts:
                 try:
+                    # NEW API: Only 'peer', 'id', 'option', 'message' - NO 'reason'!
                     await ucl.invoke(
                         Report(
                             peer=await ucl.resolve_peer(int(chat_id)),
                             id=[int(msg_id)],
-                            reason=reason_obj,
-                            message=comment_text,
-                            option=option_bytes if option_bytes else b''
+                            option=report_option,  # Only option bytes
+                            message=comment_text
                         )
                     )
                     success += 1
-                    print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS")
+                    print(f"✅ Account #{acc_num} report #{report_num + 1} SUCCESS (NEW API)")
                 except Exception as e:
                     error = str(e)
                     print(f"❌ Account #{acc_num} failed: {error}")
